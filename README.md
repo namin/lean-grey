@@ -50,17 +50,37 @@ Black uses meta-continuations (lazy streams) to connect levels. Each level's con
 
 ## What we have now
 
-`LeanBlack/Tower.lean` — a single-level evaluator with:
-- An apply rule parameterized and modifiable via EM
-- A governance policy (fixed, external) that gates modifications
-- A theorem: governed EM can only produce conservative extensions of the original rule
+`LeanBlack/Tower.lean` — a multi-level tower with EM, level-shifting, and a proved safety theorem:
 
-This is one level of reflection, not a tower. The governance policy can't be reflectively modified. There is no level-shifting.
+- **Tower state**: `TowerState := Nat → ApplyRule`. Level K uses `tower(K+1)` for apply dispatch.
+- **EM**: `(em body)` shifts evaluation up one level. Nested EM works.
+- **Install**: `(install n)` modifies `tower(level)`, the rule used by the level below. Governed by `governance(level)`.
+- **Governance**: `Governance := Nat → Policy`, fixed (not yet part of tower state).
+- **Tower safety theorem** (fully proved, no sorry):
+  ```
+  eval_tower_conservative:
+    gov.PersistentlySound t₀ →
+    TowerConservative t₀ tower →
+    eval mods gov fuel level exp env tower = some (v, tower') →
+    TowerConservative tower tower'
+  ```
+  Self-modification at any level, to any depth, preserves conservative extension across the entire tower.
 
-## What the real formalization would prove
+### What's still missing
 
-### Tower safety
-If governance at every level is sound, and governance is only modified through sound governance at the level above, then the tower as a whole preserves conservative extension. Self-modification at any level, to any depth, cannot break existing behavior — as long as every modification passes through a sound gate.
+**Governance is not reflective.** It's a fixed parameter, not part of the tower state. The next step is making it modifiable via EM, which enables the governance coherence and Gödelian limit theorems below.
+
+**Modifications are restricted to the guard+handler pattern.** Black allows arbitrary code at the meta-level.
+
+**Fuel instead of meta-continuations.** A coinductive formalization would be more faithful.
+
+## What the full formalization would prove
+
+### Tower safety ✓ (done)
+If governance at every level is sound, then the tower preserves conservative extension under self-modification at any level and any depth.
+
+### Governance coherence (next)
+If level N+2 modifies level N+1's governance policy, the new policy is still sound (because the modification was itself governed). The tower's governance is self-sustaining.
 
 ### Governance coherence
 If level N+2 modifies level N+1's governance policy, the new policy is still sound (because the modification was itself governed). The tower's governance is self-sustaining.
