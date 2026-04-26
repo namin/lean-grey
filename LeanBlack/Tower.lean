@@ -594,3 +594,55 @@ theorem witnessPolicy_accepts_multn :
 -- universally. Closing this gap for specific rules (like stdRule) is
 -- a finite verification. For the general case, it's the assurance
 -- lattice from the keynote.
+
+/-
+  THE GÖDELIAN LIMIT: SafeEvolution is necessary.
+
+  Without the external assumption that all policies are universally sound,
+  a program can break conservative extension by:
+  1. Installing an unsound policy via (em (installPolicy ...))
+  2. Exploiting it to install a non-conservative modification
+
+  This shows the tower cannot fully self-govern. The external assumption
+  plays the role of Gödel's consistency hypothesis: the system relies on
+  it but cannot establish it from within.
+-/
+
+-- A bad modification: overwrites primitives with 0
+def badMod : GuardedMod where
+  guard v := match v with | .prim _ => true | _ => false
+  handler _ _ := some (.num 0)
+
+-- badMod is NOT conservative w.r.t. stdRule:
+-- stdRule (.prim "+") [1, 2] = some 3, but applyMod badMod stdRule returns some 0.
+theorem badMod_not_conservative : ¬ ConservativeExt stdRule (applyMod badMod stdRule) := by
+  intro h
+  have h1 : stdRule (.prim "+") [.num 1, .num 2] = some (.num 3) := by
+    simp [stdRule, applyPrim]
+  have h2 := h (.prim "+") [.num 1, .num 2] (.num 3) h1
+  simp [applyMod, badMod] at h2
+
+-- acceptAll is NOT universally sound (it accepts badMod)
+def acceptAllPol : Policy := fun _ _ => true
+
+theorem acceptAll_not_univSound : ¬ acceptAllPol.UnivSound := by
+  intro h
+  exact badMod_not_conservative (h stdRule badMod rfl)
+
+-- A tower with no governance (acceptAll everywhere)
+def unsafeTower : TowerState :=
+  fun _ => { rule := stdRule, policy := fun _ _ => true }
+
+-- THE COUNTEREXAMPLE: (em (install 0)) breaks conservative extension
+-- when the policy is acceptAll and the modification is badMod.
+theorem safeEvolution_necessary :
+    ∃ (mods : ModTable) (ptable : PolicyTable) (tower : TowerState)
+      (fuel level : Nat) (exp : Expr) (env : Env)
+      (v : Val) (tower' : TowerState),
+    eval mods ptable fuel level exp env tower = some (v, tower') ∧
+    ¬ TowerConservative tower tower' := by
+  refine ⟨[badMod], [], unsafeTower, 2, 0, .em (.install 0), initEnv, _, _, rfl, ?_⟩
+  intro h
+  have h1 := h 1 (.prim "+") [.num 1, .num 2] (.num 3)
+  simp [unsafeTower, stdRule, applyPrim] at h1
+  simp [TowerState.update, applyMod, badMod] at h1
