@@ -596,16 +596,11 @@ theorem witnessPolicy_accepts_multn :
 -- lattice from the keynote.
 
 /-
-  THE GÖDELIAN LIMIT: SafeEvolution is necessary.
+  NECESSITY: SafeEvolution cannot be dropped.
 
   Without the external assumption that all policies are universally sound,
-  a program can break conservative extension by:
-  1. Installing an unsound policy via (em (installPolicy ...))
-  2. Exploiting it to install a non-conservative modification
-
-  This shows the tower cannot fully self-govern. The external assumption
-  plays the role of Gödel's consistency hypothesis: the system relies on
-  it but cannot establish it from within.
+  a program can break conservative extension. This is the converse of
+  tower safety: the assumption is necessary, not just sufficient.
 -/
 
 -- A bad modification: overwrites primitives with 0
@@ -633,7 +628,7 @@ theorem acceptAll_not_univSound : ¬ acceptAllPol.UnivSound := by
 def unsafeTower : TowerState :=
   fun _ => { rule := stdRule, policy := fun _ _ => true }
 
--- THE COUNTEREXAMPLE: (em (install 0)) breaks conservative extension
+-- Counterexample: (em (install 0)) breaks conservative extension
 -- when the policy is acceptAll and the modification is badMod.
 theorem safeEvolution_necessary :
     ∃ (mods : ModTable) (ptable : PolicyTable) (tower : TowerState)
