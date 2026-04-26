@@ -100,16 +100,18 @@ start with rejectAll;
 (em (install 0)); (2 3 4)                  => rejected
 ```
 
-### What's still missing
+### Necessity of external governance (`safeEvolution_necessary`)
+The converse of tower safety: without `SafeEvolution`, there exist programs that break conservative extension. A concrete counterexample is constructed — `badMod` (overwrites primitives with 0) is installed via `(em (install 0))` under an `acceptAll` policy. Supporting lemmas: `badMod_not_conservative`, `acceptAll_not_univSound`.
 
-**Modifications are restricted to the guard+handler pattern.** Black allows arbitrary code at the meta-level.
+This is necessary conditions, not incompleteness. It shows the external assumption can't be dropped, not that it can't be verified from within.
 
-**Fuel instead of meta-continuations.** A coinductive formalization would be more faithful.
+### Connection to Black's assume.blk
+The disjoint-guard policy from `assume.blk` is formalized as `witnessPolicy` and proved sound (`disjoint_policy_sound`). The concrete instance: `multn_disjoint_std` proves multn's guard is disjoint from stdRule. The gap between the witness-based check (finite, computable) and true disjointness (universal, non-computable) is the assurance lattice from the keynote.
 
 ## Open
 
-### The Gödelian limit
-Level N can verify modifications to level N-1, but not to itself. The tower cannot verify its own base level's governance without going up a level. This is the computational analog of Gödel's incompleteness: each level can prove the soundness of the level below, but not its own. Not yet formalized.
+### The Gödelian limit (not yet formalized)
+The real incompleteness result would be: no program in the tower can verify `SafeEvolution` for itself. This requires a notion of "what programs can verify" that the current formalization doesn't have. Level N can verify modifications to level N-1, but not to itself — this parallels iterated reflection principles in logic, but making it a theorem needs more machinery.
 
 ### Richer modifications
 Currently restricted to the guard+handler pattern. Black allows arbitrary code at the meta-level.
