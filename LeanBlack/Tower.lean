@@ -1,12 +1,18 @@
 /-
-  A reflective tower with EM (exec-at-metalevel) and verified modifications.
+  A reflective tower with EM, level-shifting, and verified modifications.
 
-  The evaluator can change its own apply rule during evaluation via EM.
-  This is the reflective move: a program modifying its own evaluator.
+  The tower has multiple levels. EM shifts evaluation up one level.
+  `install` at level N modifies tower(N) — the apply rule that level N-1
+  uses for application dispatch. This mirrors Black: EM gives access to the
+  meta-level, where the evaluator's components are modifiable bindings.
 
-  EM is governed: a policy gates which modifications are installed.
-  Main theorem: with sound governance, EM can only produce conservative
-  extensions of the original rule. Self-modification is safe.
+  Nested EM: (em (em (install 0))) at level 0 shifts to level 2 and
+  modifies tower(2), which is the rule used at level 1. This is
+  meta-meta-modification: changing how the meta-level works.
+
+  Main theorem: with sound governance at every level, evaluating any
+  program (with EM and install at any depth) produces a tower where
+  every level's rule is a conservative extension of the original.
 -/
 
 mutual
@@ -18,13 +24,14 @@ inductive Val where
   deriving Repr
 
 inductive Expr where
-  | num  : Int → Expr
-  | bool : Bool → Expr
-  | var  : String → Expr
-  | ifte : Expr → Expr → Expr → Expr
-  | lam  : List String → Expr → Expr
-  | app  : List Expr → Expr
-  | em   : Nat → Expr   -- exec-at-metalevel: install modification #n
+  | num     : Int → Expr
+  | bool    : Bool → Expr
+  | var     : String → Expr
+  | ifte    : Expr → Expr → Expr → Expr
+  | lam     : List String → Expr → Expr
+  | app     : List Expr → Expr
+  | em      : Expr → Expr    -- shift up one level and evaluate body
+  | install : Nat → Expr     -- install modification #n at this level
   deriving Repr
 end
 
@@ -41,13 +48,24 @@ def applyMod (m : GuardedMod) (r : ApplyRule) : ApplyRule :=
 abbrev ModTable := List GuardedMod
 abbrev Policy := GuardedMod → ApplyRule → Bool
 
+-- Tower state: each level n has an apply rule tower(n).
+-- Level k uses tower(k+1) for apply dispatch.
+-- install at level k modifies tower(k).
+-- So (em (install 0)) at level k modifies tower(k+1), the rule for level k.
+abbrev TowerState := Nat → ApplyRule
+
+def TowerState.update (t : TowerState) (n : Nat) (r : ApplyRule) : TowerState :=
+  fun k => if k == n then r else t k
+
 def ConservativeExt (r₁ r₂ : ApplyRule) : Prop :=
   ∀ v args result, r₁ v args = some result → r₂ v args = some result
 
-def Policy.Sound (p : Policy) (r : ApplyRule) : Prop :=
-  ∀ m, p m r = true → ConservativeExt r (applyMod m r)
+-- Governance: policy at each level
+-- policy(n) governs modifications to tower(n)
+abbrev Governance := Nat → Policy
 
-def Policy.UnivSound (p : Policy) : Prop := ∀ r, p.Sound r
+def Governance.AllSound (g : Governance) (t : TowerState) : Prop :=
+  ∀ n m, g n m (t n) = true → ConservativeExt (t n) (applyMod m (t n))
 
 def Env.lookup : Env → String → Option Val
   | [], _ => none
@@ -62,81 +80,101 @@ def applyPrim : String → List Val → Option Val
   | "-", [.num a, .num b] => some (.num (a - b))
   | _, _ => none
 
--- Result of evaluation: value + possibly updated rule
-abbrev EvalResult := Option (Val × ApplyRule)
-abbrev EvalListResult := Option (List Val × ApplyRule)
+-- Result types
+abbrev EvalResult := Option (Val × TowerState)
 
+/-
+  The evaluator with tower structure.
+
+  eval operates at a given `level`.
+  - Apply dispatch uses tower(level + 1): the rule managed by the level above.
+  - (em body) evaluates body at level + 1.
+  - (install n) modifies tower(level) — the rule used by level - 1.
+    Governed by governance(level).
+
+  Fuel bounds ALL computation (across levels).
+-/
 mutual
-def eval (mods : ModTable) (policy : Policy) (fuel : Nat)
-    (exp : Expr) (env : Env) (rule : ApplyRule) : EvalResult :=
+def eval (mods : ModTable) (gov : Governance) (fuel : Nat)
+    (level : Nat) (exp : Expr) (env : Env) (tower : TowerState)
+    : EvalResult :=
   match fuel with
   | 0 => none
   | n + 1 =>
     match exp with
-    | .num i => some (.num i, rule)
-    | .bool b => some (.bool b, rule)
+    | .num i => some (.num i, tower)
+    | .bool b => some (.bool b, tower)
     | .var x =>
       match env.lookup x with
-      | some v => some (v, rule)
+      | some v => some (v, tower)
       | none => none
     | .ifte c t e =>
-      match eval mods policy n c env rule with
-      | some (.bool false, rule') => eval mods policy n e env rule'
-      | some (_, rule') => eval mods policy n t env rule'
+      match eval mods gov n level c env tower with
+      | some (.bool false, tower') => eval mods gov n level e env tower'
+      | some (_, tower') => eval mods gov n level t env tower'
       | none => none
-    | .lam params body => some (.closure params body env, rule)
+    | .lam params body => some (.closure params body env, tower)
     | .app exprs =>
       match exprs with
       | [] => none
       | f :: args =>
-        match eval mods policy n f env rule with
-        | some (fv, rule') =>
-          match evalList mods policy n args env rule' with
-          | some (avs, rule'') =>
+        match eval mods gov n level f env tower with
+        | some (fv, tower') =>
+          match evalList mods gov n level args env tower' with
+          | some (avs, tower'') =>
             match fv with
             | .closure params body cenv =>
-              eval mods policy n body (Env.extend cenv params avs) rule''
+              eval mods gov n level body (Env.extend cenv params avs) tower''
             | _ =>
-              match rule'' fv avs with
-              | some v => some (v, rule'')
+              -- Apply dispatch: use rule from level ABOVE
+              match (tower'' (level + 1)) fv avs with
+              | some v => some (v, tower'')
               | none => none
           | none => none
         | none => none
-    | .em idx =>
-      match mods[idx]? with
+    -- EM: shift up one level
+    | .em body =>
+      eval mods gov n (level + 1) body env tower
+    -- INSTALL: modify this level's rule (used by level below)
+    | .install modIdx =>
+      match mods[modIdx]? with
       | some mod =>
-        if policy mod rule then
-          some (.bool true, applyMod mod rule)
+        let rule := tower level
+        if gov level mod rule then
+          some (.bool true, tower.update level (applyMod mod rule))
         else
-          some (.bool false, rule)
-      | none => some (.bool false, rule)
+          some (.bool false, tower)
+      | none => some (.bool false, tower)
 
-def evalList (mods : ModTable) (policy : Policy) (fuel : Nat)
-    (exps : List Expr) (env : Env) (rule : ApplyRule) : EvalListResult :=
+def evalList (mods : ModTable) (gov : Governance) (fuel : Nat)
+    (level : Nat) (exps : List Expr) (env : Env) (tower : TowerState)
+    : Option (List Val × TowerState) :=
   match fuel with
   | 0 => none
   | n + 1 =>
     match exps with
-    | [] => some ([], rule)
+    | [] => some ([], tower)
     | e :: rest =>
-      match eval mods policy n e env rule with
-      | some (v, rule') =>
-        match evalList mods policy n rest env rule' with
-        | some (vs, rule'') => some (v :: vs, rule'')
+      match eval mods gov n level e env tower with
+      | some (v, tower') =>
+        match evalList mods gov n level rest env tower' with
+        | some (vs, tower'') => some (v :: vs, tower'')
         | none => none
       | none => none
 end
 
--- Helpers and instances
+-- Standard setup
 def stdRule : ApplyRule
   | .prim name, args => applyPrim name args
   | _, _ => none
 
+def initTower : TowerState := fun _ => stdRule
+
 def initEnv : Env :=
   [("+", .prim "+"), ("-", .prim "-"), ("*", .prim "*")]
 
-def acceptAll : Policy := fun _ _ => true
-def rejectAll : Policy := fun _ _ => false
+def acceptAll : Governance := fun _ _ _ => true
+def rejectAll : Governance := fun _ _ _ => false
 
 def multnMod : GuardedMod where
   guard v := match v with | .num _ => true | _ => false
@@ -148,30 +186,49 @@ def multnMod : GuardedMod where
       else none
     | _ => none
 
--- Extract just the value for testing (ApplyRule has no Repr)
-def evalVal (mods : ModTable) (policy : Policy) (fuel : Nat)
-    (exp : Expr) (env : Env) (rule : ApplyRule) : Option Val :=
-  (eval mods policy fuel exp env rule).map Prod.fst
+-- Helper: extract just the value
+def evalVal (mods : ModTable) (gov : Governance) (fuel : Nat) (level : Nat)
+    (exp : Expr) (env : Env) (tower : TowerState) : Option Val :=
+  (eval mods gov fuel level exp env tower).map Prod.fst
 
 -- Smoke tests
-#eval evalVal [] acceptAll 100 (.app [.var "+", .num 1, .num 2]) initEnv stdRule
-#eval evalVal [] acceptAll 100 (.app [.num 2, .num 3, .num 4]) initEnv stdRule
 
--- Helper to test EM: evaluate em, then evaluate expr with the resulting rule
-def evalAfterEM (mods : ModTable) (policy : Policy) (fuel : Nat)
-    (emIdx : Nat) (exp : Expr) (env : Env) (rule : ApplyRule) : Option Val :=
-  match eval mods policy fuel (.em emIdx) env rule with
-  | some (_, rule') => evalVal mods policy fuel exp env rule'
-  | none => none
+-- Basic arithmetic at level 0
+#eval evalVal [] acceptAll 100 0 (.app [.var "+", .num 1, .num 2]) initEnv initTower
+-- => some 3
 
-#eval evalAfterEM [multnMod] acceptAll 100 0
-  (.app [.num 2, .num 3, .num 4]) initEnv stdRule  -- 24
+-- (2 3 4) fails without multn
+#eval evalVal [] acceptAll 100 0 (.app [.num 2, .num 3, .num 4]) initEnv initTower
+-- => none
 
-#eval evalAfterEM [multnMod] rejectAll 100 0
-  (.app [.num 2, .num 3, .num 4]) initEnv stdRule  -- none (rejected)
+-- (em (install 0)): at level 0, shift to level 1, install multn into tower(1)
+-- tower(1) is the rule used by level 0
+-- Then (2 3 4) at level 0 should work
+-- We need a "begin" or sequencing. Let's use ifte as sequencing:
+-- (if (em (install 0)) (2 3 4) (2 3 4))
+#eval evalVal [multnMod] acceptAll 100 0
+  (.ifte (.em (.install 0)) (.app [.num 2, .num 3, .num 4]) (.num 0))
+  initEnv initTower
+-- => some 24
 
-#eval evalAfterEM [multnMod] acceptAll 100 0
-  (.app [.var "+", .num 1, .num 2]) initEnv stdRule  -- 3 (preserved)
+-- Same but with rejectAll: install fails, (2 3 4) still fails
+#eval evalVal [multnMod] rejectAll 100 0
+  (.ifte (.em (.install 0)) (.app [.num 2, .num 3, .num 4]) (.num 0))
+  initEnv initTower
+-- => none
+
+-- (+ 1 2) still works after EM install (conservative extension)
+#eval evalVal [multnMod] acceptAll 100 0
+  (.ifte (.em (.install 0)) (.app [.var "+", .num 1, .num 2]) (.num 0))
+  initEnv initTower
+-- => some 3
+
+-- NESTED EM: (em (em (install 0))) at level 0
+-- shifts to level 2, installs into tower(2), which is the rule for level 1
+#eval evalVal [multnMod] acceptAll 100 0
+  (.em (.em (.install 0)))
+  initEnv initTower
+-- => some true (installed at level 2)
 
 /-
   Basic lemmas
@@ -184,131 +241,164 @@ theorem conservative_trans {r₁ r₂ r₃ : ApplyRule} :
     ConservativeExt r₁ r₂ → ConservativeExt r₂ r₃ → ConservativeExt r₁ r₃ :=
   fun h₁₂ h₂₃ v args res h => h₂₃ v args res (h₁₂ v args res h)
 
-def Disjoint (m : GuardedMod) (r : ApplyRule) : Prop :=
-  ∀ v args, m.guard v = true → r v args = none
+-- TowerState.update only changes one level
+theorem update_other (t : TowerState) (n k : Nat) (r : ApplyRule) :
+    k ≠ n → (t.update n r) k = t k := by
+  intro hne; simp [TowerState.update, hne]
 
-theorem disjoint_conservative (m : GuardedMod) (r : ApplyRule) :
-    Disjoint m r → ConservativeExt r (applyMod m r) := by
-  intro hdis v args result h
-  simp only [applyMod]
-  split
-  · next hg => exact absurd h (by simp [hdis v args hg])
-  · exact h
+theorem update_same (t : TowerState) (n : Nat) (r : ApplyRule) :
+    (t.update n r) n = r := by
+  simp [TowerState.update]
+
+-- Pointwise conservative extension for tower states
+def TowerConservative (t₁ t₂ : TowerState) : Prop :=
+  ∀ n, ConservativeExt (t₁ n) (t₂ n)
+
+theorem tower_conservative_refl (t : TowerState) : TowerConservative t t :=
+  fun n => conservative_refl (t n)
+
+theorem tower_conservative_trans {t₁ t₂ t₃ : TowerState} :
+    TowerConservative t₁ t₂ → TowerConservative t₂ t₃ → TowerConservative t₁ t₃ :=
+  fun h₁₂ h₂₃ n => conservative_trans (h₁₂ n) (h₂₃ n)
+
+-- Updating with a conservative extension preserves tower conservativeness
+theorem update_conservative (t : TowerState) (n : Nat) (r : ApplyRule)
+    (h : ConservativeExt (t n) r) :
+    TowerConservative t (t.update n r) := by
+  intro k
+  by_cases hk : k = n
+  · subst hk; rw [update_same]; exact h
+  · rw [update_other _ _ _ _ hk]; exact conservative_refl _
 
 /-
-  THE MAIN THEOREM: governed EM preserves conservative extension.
+  THE MAIN THEOREM: tower safety under governed self-modification.
 
-  If governance is universally sound, then evaluating ANY program
-  (which may use EM to modify the evaluator) yields a rule that
-  is a conservative extension of the original.
-
-  eval_rule_conservative: self-modification under governance is safe.
+  If governance is sound at every level for the current tower state,
+  then evaluating any program (with EM and install at any depth)
+  produces a tower where every level's rule is a conservative extension
+  of the original.
 -/
 
+-- Governance is "persistently sound": sound for any conservative extension
+-- of the original tower. Needed because the tower changes during evaluation.
+def Governance.PersistentlySound (g : Governance) (t₀ : TowerState) : Prop :=
+  ∀ t, TowerConservative t₀ t → ∀ n m, g n m (t n) = true →
+    ConservativeExt (t n) (applyMod m (t n))
+
 mutual
-theorem eval_rule_conservative (mods : ModTable) (policy : Policy)
-    (h_sound : policy.UnivSound)
-    (fuel : Nat) (exp : Expr) (env : Env) (rule rule' : ApplyRule) (v : Val) :
-    eval mods policy fuel exp env rule = some (v, rule') →
-    ConservativeExt rule rule' := by
+theorem eval_tower_conservative (mods : ModTable) (gov : Governance)
+    (t₀ : TowerState) (h_sound : gov.PersistentlySound t₀)
+    (fuel : Nat) (level : Nat) (exp : Expr) (env : Env)
+    (tower : TowerState) (h_tc : TowerConservative t₀ tower)
+    (v : Val) (tower' : TowerState) :
+    eval mods gov fuel level exp env tower = some (v, tower') →
+    TowerConservative tower tower' := by
   match fuel with
   | 0 => simp [eval]
   | n + 1 =>
     match exp with
     | .num _ | .bool _ | .lam _ _ =>
-      simp only [eval]; intro h; obtain ⟨_, rfl⟩ := Prod.mk.inj (Option.some.inj h)
-      exact conservative_refl _
+      simp only [eval]; intro h; obtain ⟨-, rfl⟩ := h
+      exact tower_conservative_refl _
     | .var x =>
       simp only [eval]; intro h
       split at h <;> simp at h
       obtain ⟨-, rfl⟩ := h
-      exact conservative_refl _
-    | .em idx =>
-      simp only [eval]; intro h
-      split at h
-      · next mod _ =>
-        split at h
-        · obtain ⟨_, rfl⟩ := Prod.mk.inj (Option.some.inj h)
-          exact h_sound rule mod (by assumption)
-        · obtain ⟨_, rfl⟩ := Prod.mk.inj (Option.some.inj h)
-          exact conservative_refl _
-      · obtain ⟨_, rfl⟩ := Prod.mk.inj (Option.some.inj h)
-        exact conservative_refl _
+      exact tower_conservative_refl _
     | .ifte c t e =>
       simp only [eval]; intro h
-      match hc : eval mods policy n c env rule with
+      match hc : eval mods gov n level c env tower with
       | none => simp [hc] at h
-      | some (cv, rc) =>
-        have hrc := eval_rule_conservative mods policy h_sound n c env rule rc cv hc
+      | some (cv, tc) =>
         simp [hc] at h
+        have htc := eval_tower_conservative mods gov t₀ h_sound n level c env
+          tower h_tc cv tc hc
+        have h_tc' := tower_conservative_trans h_tc htc
         match cv with
         | .bool false =>
           simp at h
-          exact conservative_trans hrc
-            (eval_rule_conservative mods policy h_sound n e env rc rule' v h)
-        | .bool true =>
+          exact tower_conservative_trans htc
+            (eval_tower_conservative mods gov t₀ h_sound n level e env tc h_tc' v tower' h)
+        | .bool true | .num _ | .closure _ _ _ | .prim _ =>
           simp at h
-          exact conservative_trans hrc
-            (eval_rule_conservative mods policy h_sound n t env rc rule' v h)
-        | .num _ | .closure _ _ _ | .prim _ =>
-          simp at h
-          exact conservative_trans hrc
-            (eval_rule_conservative mods policy h_sound n t env rc rule' v h)
+          exact tower_conservative_trans htc
+            (eval_tower_conservative mods gov t₀ h_sound n level t env tc h_tc' v tower' h)
     | .app exprs =>
       simp only [eval]; intro h
       match exprs with
       | [] => simp at h
       | f :: args =>
         simp only [eval] at h
-        match hf : eval mods policy n f env rule with
+        match hf : eval mods gov n level f env tower with
         | none => simp [hf] at h
-        | some (fv, rf) =>
+        | some (fv, tf) =>
           simp [hf] at h
-          have hrf := eval_rule_conservative mods policy h_sound n f env rule rf fv hf
-          match ha : evalList mods policy n args env rf with
+          have htf := eval_tower_conservative mods gov t₀ h_sound n level f env
+            tower h_tc fv tf hf
+          have h_tc_f := tower_conservative_trans h_tc htf
+          match ha : evalList mods gov n level args env tf with
           | none => simp [ha] at h
-          | some (avs, ra) =>
+          | some (avs, ta) =>
             simp [ha] at h
-            have hra := evalList_rule_conservative mods policy h_sound n args env rf ra avs ha
-            have h_fa := conservative_trans hrf hra
+            have hta := evalList_tower_conservative mods gov t₀ h_sound n level args env
+              tf h_tc_f avs ta ha
+            have h_fa := tower_conservative_trans htf hta
+            have h_tc_a := tower_conservative_trans h_tc_f hta
             match fv with
             | .closure params body cenv =>
-              exact conservative_trans h_fa
-                (eval_rule_conservative mods policy h_sound n body
-                  (Env.extend cenv params avs) ra rule' v h)
+              exact tower_conservative_trans h_fa
+                (eval_tower_conservative mods gov t₀ h_sound n level body
+                  (Env.extend cenv params avs) ta h_tc_a v tower' h)
             | .num _ | .bool _ | .prim _ =>
-              simp at h
-              split at h <;> simp at h
-              obtain ⟨-, rfl⟩ := h
-              exact h_fa
+              simp at h; split at h <;> simp at h
+              obtain ⟨-, rfl⟩ := h; exact h_fa
+    -- EM: level-shift. Evaluate body at level + 1.
+    | .em body =>
+      simp only [eval]; intro h
+      exact eval_tower_conservative mods gov t₀ h_sound n (level + 1) body env
+        tower h_tc v tower' h
+    -- INSTALL: modify tower(level), governed by gov(level).
+    | .install modIdx =>
+      simp only [eval]; intro h
+      split at h
+      · next mod _ =>
+        split at h
+        · next h_pass =>
+          obtain ⟨-, rfl⟩ := h
+          exact update_conservative tower level _ (h_sound tower h_tc level mod h_pass)
+        · obtain ⟨-, rfl⟩ := h; exact tower_conservative_refl _
+      · obtain ⟨-, rfl⟩ := h; exact tower_conservative_refl _
 termination_by fuel
 
-theorem evalList_rule_conservative (mods : ModTable) (policy : Policy)
-    (h_sound : policy.UnivSound)
-    (fuel : Nat) (exps : List Expr) (env : Env) (rule rule' : ApplyRule) (vs : List Val) :
-    evalList mods policy fuel exps env rule = some (vs, rule') →
-    ConservativeExt rule rule' := by
+theorem evalList_tower_conservative (mods : ModTable) (gov : Governance)
+    (t₀ : TowerState) (h_sound : gov.PersistentlySound t₀)
+    (fuel : Nat) (level : Nat) (exps : List Expr) (env : Env)
+    (tower : TowerState) (h_tc : TowerConservative t₀ tower)
+    (vs : List Val) (tower' : TowerState) :
+    evalList mods gov fuel level exps env tower = some (vs, tower') →
+    TowerConservative tower tower' := by
   match fuel with
   | 0 => simp [evalList]
   | n + 1 =>
     match exps with
     | [] =>
-      simp only [evalList]; intro h
-      obtain ⟨-, rfl⟩ := h
-      exact conservative_refl _
+      simp only [evalList]; intro h; obtain ⟨-, rfl⟩ := h
+      exact tower_conservative_refl _
     | e :: rest =>
       simp only [evalList]; intro h
-      match he : eval mods policy n e env rule with
+      match he : eval mods gov n level e env tower with
       | none => simp [he] at h
-      | some (val, re) =>
+      | some (val, te) =>
         simp [he] at h
-        have hre := eval_rule_conservative mods policy h_sound n e env rule re val he
-        match hr : evalList mods policy n rest env re with
+        have hte := eval_tower_conservative mods gov t₀ h_sound n level e env
+          tower h_tc val te he
+        have h_tc_e := tower_conservative_trans h_tc hte
+        match hr : evalList mods gov n level rest env te with
         | none => simp [hr] at h
-        | some (vs', rr) =>
-          simp [hr] at h
-          obtain ⟨-, rfl⟩ := h
-          exact conservative_trans hre
-            (evalList_rule_conservative mods policy h_sound n rest env re rr vs' hr)
+        | some (vs', tr) =>
+          simp [hr] at h; obtain ⟨-, rfl⟩ := h
+          exact tower_conservative_trans hte
+            (evalList_tower_conservative mods gov t₀ h_sound n level rest env
+              te h_tc_e vs' tr hr)
 termination_by fuel
 end
