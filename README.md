@@ -50,50 +50,72 @@ Black uses meta-continuations (lazy streams) to connect levels. Each level's con
 
 ## What we have now
 
-`LeanBlack/Tower.lean` — a multi-level tower with EM, level-shifting, and a proved safety theorem:
+`LeanBlack/Tower.lean` — a multi-level reflective tower with EM, reflective governance, and proved safety theorems. Fully proved, no sorry.
 
-- **Tower state**: `TowerState := Nat → ApplyRule`. Level K uses `tower(K+1)` for apply dispatch.
-- **EM**: `(em body)` shifts evaluation up one level. Nested EM works.
-- **Install**: `(install n)` modifies `tower(level)`, the rule used by the level below. Governed by `governance(level)`.
-- **Governance**: `Governance := Nat → Policy`, fixed (not yet part of tower state).
-- **Tower safety theorem** (fully proved, no sorry):
-  ```
-  eval_tower_conservative:
-    gov.PersistentlySound t₀ →
-    TowerConservative t₀ tower →
-    eval mods gov fuel level exp env tower = some (v, tower') →
-    TowerConservative tower tower'
-  ```
-  Self-modification at any level, to any depth, preserves conservative extension across the entire tower.
+### Tower structure
+
+Each level has an apply rule AND a governance policy, both part of the tower state:
+
+```
+structure LevelState where
+  rule : ApplyRule
+  policy : Policy
+
+abbrev TowerState := Nat → LevelState
+```
+
+Three expression forms for reflection:
+- `(em body)` — shift up one level and evaluate body. Nested EM works.
+- `(install n)` — install rule modification #n at this level, governed by this level's policy. Affects the level below (which uses this level's rule for apply dispatch).
+- `(installPolicy n)` — replace this level's policy from the policy table.
+
+### Theorems (all fully proved)
+
+**Tower safety** (`eval_tower_conservative`): If `SafeEvolution` holds (all policies in tower and table are universally sound), then evaluating any program — with EM, install, and installPolicy at any depth — preserves conservative extension across the entire tower AND preserves `SafeEvolution`.
+
+```
+eval_tower_conservative:
+  SafeEvolution ptable tower →
+  eval mods ptable fuel level exp env tower = some (v, tower') →
+  TowerConservative tower tower' ∧ SafeEvolution ptable tower'
+```
+
+**Governance coherence** (`installPolicy_safe`): Replacing a level's policy with a universally sound policy preserves `SafeEvolution`. The tower's governance is self-sustaining under reflective modification.
+
+**Install safety** (`install_safe`): Installing a rule modification that passes a universally sound policy preserves `SafeEvolution`. Universal soundness (sound for any rule) is the key: it survives rule changes.
+
+### Smoke tests
+
+```
+(+ 1 2)                                    => 3     -- basic eval
+(2 3 4)                                    => none  -- no multn
+(em (install 0)); (2 3 4)                  => 24    -- EM installs multn
+(em (install 0)); (+ 1 2)                  => 3     -- old behavior preserved
+(em (em (install 0)))                      => true  -- nested EM, level 2
+-- Reflective governance:
+start with rejectAll;
+(em (installPolicy 0));                              -- replace policy with acceptAll
+(em (install 0)); (2 3 4)                  => 24    -- now multn installs
+-- Without policy change:
+(em (install 0)); (2 3 4)                  => rejected
+```
 
 ### What's still missing
-
-**Governance is not reflective.** It's a fixed parameter, not part of the tower state. The next step is making it modifiable via EM, which enables the governance coherence and Gödelian limit theorems below.
 
 **Modifications are restricted to the guard+handler pattern.** Black allows arbitrary code at the meta-level.
 
 **Fuel instead of meta-continuations.** A coinductive formalization would be more faithful.
 
-## What the full formalization would prove
-
-### Tower safety ✓ (done)
-If governance at every level is sound, then the tower preserves conservative extension under self-modification at any level and any depth.
-
-### Governance coherence (next)
-If level N+2 modifies level N+1's governance policy, the new policy is still sound (because the modification was itself governed). The tower's governance is self-sustaining.
-
-### Governance coherence
-If level N+2 modifies level N+1's governance policy, the new policy is still sound (because the modification was itself governed). The tower's governance is self-sustaining.
+## Open
 
 ### The Gödelian limit
-Level N can verify modifications to level N-1, but not to itself. The tower cannot verify its own base level's governance without going up a level. This is the computational analog of Gödel's incompleteness: each level can prove the soundness of the level below, but not its own.
+Level N can verify modifications to level N-1, but not to itself. The tower cannot verify its own base level's governance without going up a level. This is the computational analog of Gödel's incompleteness: each level can prove the soundness of the level below, but not its own. Not yet formalized.
 
-## Approach
+### Richer modifications
+Currently restricted to the guard+handler pattern. Black allows arbitrary code at the meta-level.
 
-The formalization could proceed in two ways:
+### Meta-continuations
+A coinductive formalization (mirroring Black's lazy meta-continuation streams) would be more faithful than fuel.
 
-**Indexed family.** Define `Level : Nat → Type` with `eval : Level n → Expr → Env → Option Val` and `em : Level n → Level (n+1)`. The tower is the family. Theorems are quantified over level indices.
-
-**Coinductive / stream.** Define the tower as a coinductive stream of level states, mirroring Black's lazy meta-continuation. Levels are produced on demand. This is closer to the implementation but harder to reason about in Lean.
-
-**Fixpoint.** Define the tower semantics as a fixpoint of the "interpret the level below" operation (following Wand-Friedman). The tower is the least fixpoint. This connects to domain theory and is perhaps most natural for a LICS audience.
+### Fixpoint semantics
+Define the tower semantics as a fixpoint of the "interpret the level below" operation (following Wand-Friedman). Connects to domain theory and is perhaps most natural for a LICS audience.
