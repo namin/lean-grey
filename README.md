@@ -1,10 +1,10 @@
-# lean-black
+# lean-grey
 
-A formalization of Black's reflective tower in Lean 4, with verified reflection.
+A formalization inspired by the Black reflective tower in Lean 4, with verified reflection.
 
 ## What Black is
 
-Black (Asai, Matsuoka, Yonezawa 1996) is a reflective tower of interpreters. The key features:
+[Black](https://github.com/readevalprintlove/black) (Asai, Matsuoka, Yonezawa 1996) is a reflective tower of interpreters. The key features:
 
 1. **The evaluator's components are data.** `base-eval`, `base-apply`, and all other evaluator functions are bindings in the meta-environment — values that programs can access and modify.
 
