@@ -101,7 +101,7 @@ The converse of tower safety: without `SafeEvolution`, there exist programs that
 This is necessary conditions, not incompleteness. It shows the external assumption can't be dropped, not that it can't be verified from within.
 
 ### Connection to Black's assume.blk
-The disjoint-guard policy from `assume.blk` is formalized as `witnessPolicy` and proved sound (`disjoint_policy_sound`). The concrete instance: `multn_disjoint_std` proves multn's guard is disjoint from stdRule. The gap between the witness-based check (finite, computable) and true disjointness (universal, non-computable) is the assurance lattice from the keynote.
+The disjoint-guard policy from [`assume.blk`](https://github.com/namin/black/blob/play-assume/examples/assume.blk) is formalized as `witnessPolicy` and proved sound (`disjoint_policy_sound`). The concrete instance: `multn_disjoint_std` proves multn's guard is disjoint from stdRule. The gap between the witness-based check (finite, computable) and true disjointness (universal, non-computable) is the assurance lattice from the keynote.
 
 ## Open
 
