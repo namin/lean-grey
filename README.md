@@ -16,7 +16,7 @@ Black (Asai, Matsuoka, Yonezawa 1996) is a reflective tower of interpreters. The
 
 ## What a real tower formalization needs
 
-### Level structure
+### Level structure ✓
 
 A tower is an infinite sequence of levels. Each level has:
 - An **environment** (meta-env) containing the evaluator components for the level below
@@ -25,7 +25,7 @@ A tower is an infinite sequence of levels. Each level has:
 
 Level 0 is the user program. Level 1 is the meta-level that interprets level 0. Level 2 interprets level 1. And so on.
 
-### EM as level-shifting
+### EM as level-shifting ✓
 
 `(EM expr)` at level N:
 1. Shifts up to level N+1
@@ -35,14 +35,9 @@ Level 0 is the user program. Level 1 is the meta-level that interprets level 0. 
 
 Nested EM: `(EM (EM expr))` at level 0 evaluates `expr` at level 2, which can modify level 1's components (including how level 1 governs level 0).
 
-### Governance as a reflective artifact
+### Governance as a reflective artifact ✓
 
-In the current formalization, the governance policy is a fixed Lean function. In a real tower:
-- The governance policy for level N is a component at level N+1
-- Level N+2 can modify it via EM
-- The policy is itself subject to reflection — the tower governs its own governance
-
-This is the deep point: the verification gate is not external scaffolding. It's inside the tower, subject to the same reflective operations as everything else.
+The governance policy at each level is part of `LevelState` and modifiable via `(installPolicy n)` through EM. Level N+2 can modify level N+1's policy. The tower governs its own governance. The governance coherence theorem (`installPolicy_safe`) proves `SafeEvolution` is maintained.
 
 ### The meta-continuation
 
