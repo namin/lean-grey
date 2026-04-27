@@ -115,4 +115,4 @@ Currently restricted to the guard+handler pattern. Black allows arbitrary code a
 A coinductive formalization (mirroring Black's lazy meta-continuation streams) would be more faithful than fuel.
 
 ### Fixpoint semantics
-Define the tower semantics as a fixpoint of the "interpret the level below" operation (following Wand-Friedman). Connects to domain theory and is perhaps most natural for a LICS audience.
+Define the tower semantics as a fixpoint of the "interpret the level below" operation (following Wand-Friedman). Connects to domain theory.
