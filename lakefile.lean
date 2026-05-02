@@ -12,3 +12,6 @@ lean_lib «LeanBlack» where
 
 lean_exe «bedrock-smoke» where
   root := `LeanBlack.Bedrock
+
+lean_exe «proposal-smoke» where
+  root := `LeanBlack.Elab
