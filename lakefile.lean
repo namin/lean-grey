@@ -9,3 +9,6 @@ package «lean-black» where
 @[default_target]
 lean_lib «LeanBlack» where
   srcDir := "."
+
+lean_exe «bedrock-smoke» where
+  root := `LeanBlack.Bedrock
