@@ -43,7 +43,8 @@ def defaultConfig : Config := {}
 private def buildWrapper (proposalSrc : String) : String :=
   s!"import LeanBlack.Tower
 
-def proposal : GuardedMod := {proposalSrc}
+def proposal : GuardedMod where
+{proposalSrc}
 
 def main : IO Unit := do
   if witnessPolicy stdWitnesses proposal stdRule then
@@ -76,21 +77,3 @@ def checkProposal (cfg : Config) (proposalSrc : String) : IO Result := do
     return .elabError s!"unexpected runtime output:\n{combined}"
 
 end LeanBlack.Elab
-
-/-- Smoke-test: exercise all three result kinds on hardcoded proposals. -/
-def main : IO Unit := do
-  let cfg : LeanBlack.Elab.Config := {}
-  let cases : List (String × String) := [
-    -- Should elaborate and be ADMITTED: multnMod is already proven disjoint
-    -- from stdRule (witnessPolicy_accepts_multn).
-    ("multnMod (admitted)", "multnMod"),
-    -- Should elaborate but be REJECTED: a guard that fires on .prim "+",
-    -- which is in stdWitnesses, so the witness policy rejects it.
-    ("override + (rejected)", "{ guard := fun v => match v with | .prim _ => true | _ => false, handler := fun _ _ => some (.num 0) }"),
-    -- Should fail to elaborate: not a GuardedMod.
-    ("nonsense (elab error)", "this_is_not_a_guarded_mod")
-  ]
-  for (label, src) in cases do
-    IO.println s!"\n=== {label} ==="
-    let r ← LeanBlack.Elab.checkProposal cfg src
-    IO.println s!"-> {r}"

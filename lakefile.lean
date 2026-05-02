@@ -11,7 +11,10 @@ lean_lib «LeanBlack» where
   srcDir := "."
 
 lean_exe «bedrock-smoke» where
-  root := `LeanBlack.Bedrock
+  root := `BedrockSmoke
 
 lean_exe «proposal-smoke» where
-  root := `LeanBlack.Elab
+  root := `ProposalSmoke
+
+lean_exe «runner» where
+  root := `RunnerMain
