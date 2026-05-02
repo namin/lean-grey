@@ -17,5 +17,5 @@ def main : IO Unit := do
   ]
   for (label, propSrc, witSrc) in cases do
     IO.println s!"\n=== {label} ==="
-    let r ← LeanBlack.Elab.checkProposal cfg propSrc witSrc []
+    let r ← LeanBlack.Elab.checkProposal cfg propSrc witSrc [] false
     IO.println s!"-> {r}"

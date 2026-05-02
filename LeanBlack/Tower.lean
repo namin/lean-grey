@@ -76,6 +76,25 @@ def Policy.UnivSound (p : Policy) : Prop :=
 def TowerSound (t : TowerState) : Prop :=
   ∀ n, (t n).policy.Sound (t n).rule
 
+-- Parametric versions: a policy is "sound for property P at rule r" if every
+-- modification it admits relates r to the new rule under P. The existing
+-- `Policy.Sound` / `Policy.UnivSound` are the ConservativeExt instantiation.
+-- Different `P` lets the same architecture express different safety claims
+-- (CE-of-base, CE-of-current, termination preservation, type safety, ...).
+def Policy.SoundFor (P : ApplyRule → ApplyRule → Prop) (p : Policy)
+    (r : ApplyRule) : Prop :=
+  ∀ m, p m r = true → P r (applyMod m r)
+
+def Policy.UnivSoundFor (P : ApplyRule → ApplyRule → Prop) (p : Policy) : Prop :=
+  ∀ r, p.SoundFor P r
+
+-- Witness that the existing definitions are exactly the CE instantiation.
+theorem Policy.Sound_eq_SoundFor_CE (p : Policy) (r : ApplyRule) :
+    p.Sound r = p.SoundFor ConservativeExt r := rfl
+
+theorem Policy.UnivSound_eq_UnivSoundFor_CE (p : Policy) :
+    p.UnivSound = p.UnivSoundFor ConservativeExt := rfl
+
 def Env.lookup : Env → String → Option Val
   | [], _ => none
   | (k, v) :: rest, name => if k == name then some v else Env.lookup rest name

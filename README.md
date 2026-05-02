@@ -79,6 +79,8 @@ eval_tower_conservative:
 
 **Install safety** (`install_safe`): Installing a rule modification that passes a universally sound policy preserves `SafeEvolution`. Universal soundness (sound for any rule) is the key: it survives rule changes.
 
+**Parametric soundness** (`Policy.SoundFor`, `Policy.UnivSoundFor`): the existing `Policy.Sound` / `Policy.UnivSound` are the `ConservativeExt` instantiation of more general predicates parameterized over a property `P : ApplyRule → ApplyRule → Prop`. A library of policies, each statically proved sound for its property (CE-of-base, CE-of-current, termination, type safety, etc.), can sit in the same architecture; the choice of policy is what specifies which safety claim is being made.
+
 ### Smoke tests
 
 ```
@@ -116,33 +118,39 @@ A small loop in which Claude (via AWS Bedrock) proposes a `GuardedMod` in Lean s
 Prerequisites: `aws` CLI on PATH with Bedrock-enabled credentials, and the project built (`lake build`).
 
 ```bash
-lake exe bedrock-smoke      # one-shot round trip ("READY")
-lake exe proposal-smoke     # exercise admitted / rejected / elab-error
-                            # on three hardcoded proposals
-lake exe runner [N]         # N rounds of LLM-proposes / Lean-checks
-                            # (default 3)
+lake exe bedrock-smoke               # one-shot round trip ("READY")
+lake exe proposal-smoke              # exercise admitted / rejected / elab-error
+                                     # on three hardcoded proposals
+lake exe runner [N] [base|current]   # N rounds; mode picks the policy.
+                                     # default: 3 rounds, base mode.
 ```
 
-A typical 3-round run admits three mods, each with a witness that the wrapper evaluates against the chained rule. Sample output:
+The two modes are different policies for the same property (CE) with different reach:
+
+- **base** uses `witnessPolicy stdWitnesses` — each proposal must avoid stdRule's success cases. Accumulated mods don't influence later verdicts; conflicting proposals are all admitted.
+- **current** uses `witnessPolicy (stdWitnesses ++ priorWitnessVals)` — each prior admit's witness value extends the witness list, so a proposal whose guard fires on a previously-claimed value is rejected.
+
+A typical 3-round contrast:
 
 ```
-ROUND 1: bool combinator → witness (.bool true, [.num 7])  →  Val.num 7
-ROUND 2: num subtract    → witness (.num 7, [.num 3])      →  Val.num 4
-ROUND 3: num n*m+n       → witness (.num 6, [.num 3])      →  Val.num 24
+base:    bool admit → num admit → num admit (conflict)        3 admitted
+current: bool admit → num admit → num REJECTED (overlap)      2 admitted, 1 rejected
 ```
 
-Each value is the `repr` of `applyMod proposal (priors.foldl applyMod stdRule) v args`, computed inside the `lake env lean --run` subprocess.
+Same proposals, same architecture, different policy mode, demonstrably different verdicts.
+
+On admit, the wrapper computes `applyMod proposal (priors.foldl applyMod stdRule) v args` for the LLM's `(v, args)` witness and prints the value's `repr` — so each round shows what the just-admitted mod actually does.
 
 ### Scope and limits
 
-The runner gates each proposal against `witnessPolicy stdWitnesses` over `stdRule` — the conservative-extension-of-base property. Each admitted modification is individually disjoint from stdRule's success cases (`+`, `-`, `*`, closures), so the composition of all admitted mods preserves stdRule's outputs everywhere stdRule succeeds. This is the safety property `install_safe` and `eval_tower_conservative` already prove; the runner is its LLM-driven counterpart.
+Both runner modes use `witnessPolicy` instances and prove conservative extension. **base** mode preserves CE-of-stdRule (each admitted mod is individually disjoint from stdRule's success cases). **current** mode additionally rejects mods that fire on territory already claimed by previously admitted mods, approximating CE-of-current via the growing witness list. Both fit the parametric `Policy.SoundFor _ _ ConservativeExt` schema; what differs is which witnesses are passed.
 
-The witness eval shows causal effect of the chained rule: each round's admit produces a value computed against `applyMod proposal (priors.foldl applyMod stdRule)`, so accumulated mods are part of the rule the witness runs against. (Whether a particular witness exercises *prior* mods or only the new one depends on which guards fire first under `applyMod`'s outer-wins semantics — for typical LLM-chosen witnesses, the just-added mod fires.)
+The witness eval on admit shows the causal effect of the chained rule: each round produces a value computed against `applyMod proposal (priors.foldl applyMod stdRule)`. (Whether a particular witness exercises prior mods or only the new one depends on which guards fire first under `applyMod`'s outer-wins semantics — typical LLM-chosen witnesses fire on the just-added mod.)
 
 Remaining caveats:
 
-- The gate stays the rule-independent `witnessPolicy stdWitnesses`, so accepted-mod conflicts don't reject — round 3 can claim `.num` even if round 2 already did. This is the conservative-extension-of-base story, accepted as the design.
-- Retry attempts overwrite the verdict — `RoundResult` records only the final attempt's source. If you want to inspect the full retry trace, `runOneRound` would need to accumulate intermediates.
+- Retry attempts overwrite the verdict — `RoundResult` records only the final attempt's source. To inspect the full retry trace, `runOneRound` would need to accumulate intermediates.
+- The witness policy in current mode tracks one representative value per admitted mod (the witness's `.1` component). A proposal whose guard fires on a *different* `.num` value than the one in the prior admit's witness wouldn't be caught by this approximation — the LLM happens to use representative numeric values, which makes the demo work, but the gate is a finite approximation of "true disjointness from current rule."
 
 ## Open
 

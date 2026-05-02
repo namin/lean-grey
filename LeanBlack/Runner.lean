@@ -25,8 +25,26 @@ structure RoundResult where
   witnessSrc  : String
   outcome     : LeanBlack.Elab.Result
 
+/-- Which witness-policy mode the gate runs in.
+
+    `base`    — `witnessPolicy stdWitnesses`. Each proposal must avoid
+                stdRule's success cases (CE-of-base). Accumulated mods
+                don't influence later verdicts.
+    `current` — `witnessPolicy (stdWitnesses ++ priorWitnessVals)`.
+                Each prior admit's witness value is added to the witness
+                list, so later proposals can't fire on territory already
+                claimed. Approximates CE-of-current. -/
+inductive Mode where
+  | base
+  | current
+  deriving Repr, BEq
+
+instance : ToString Mode where
+  toString | .base => "base" | .current => "current"
+
 structure Config where
   maxRetries : Nat := 1
+  mode       : Mode := .base
 
 def defaultConfig : Config := {}
 
@@ -119,13 +137,20 @@ def fixFirstLineIndent (src : String) : String :=
     else src
   | _ => src
 
-/-- Run one LLM proposal round, with retry on elaboration error. -/
+/-- Run one LLM proposal round, with retry on elaboration error.
+    `priors` is a list of (proposalSrc, witnessSrc) pairs from prior
+    admitted rounds; `rcfg.mode` selects whether the witness list passed
+    to the policy gate is `stdWitnesses` (base) or extended with the
+    prior witness values (current). -/
 def runOneRound
     (bcfg : LeanBlack.Bedrock.Config) (ecfg : LeanBlack.Elab.Config)
-    (rcfg : Config) (admitted : List String) : IO (Option RoundResult) := do
+    (rcfg : Config) (priors : List (String × String))
+    : IO (Option RoundResult) := do
+  let admittedProposals := priors.map Prod.fst
+  let extendWitnesses := rcfg.mode == .current
   let rec attempt (retry : Option (String × String × String))
                   (remaining : Nat) : IO (Option RoundResult) := do
-    let prompt := buildPrompt admitted retry
+    let prompt := buildPrompt admittedProposals retry
     match ← LeanBlack.Bedrock.invoke bcfg prompt with
     | .error e =>
       IO.eprintln s!"Bedrock error: {e}"
@@ -136,7 +161,8 @@ def runOneRound
       IO.println "--- LLM proposed ---"
       IO.println s!"PROPOSAL:\n{proposalSrc}"
       IO.println s!"WITNESS:\n{witnessSrc}"
-      let outcome ← LeanBlack.Elab.checkProposal ecfg proposalSrc witnessSrc admitted
+      let outcome ← LeanBlack.Elab.checkProposal ecfg
+        proposalSrc witnessSrc priors extendWitnesses
       match outcome with
       | .elabError msg =>
         if remaining > 0 then

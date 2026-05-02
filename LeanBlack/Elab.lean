@@ -46,18 +46,24 @@ structure Config where
 
 def defaultConfig : Config := {}
 
-private def admittedDef (i : Nat) (src : String) : String :=
-  s!"def admitted_{i} : GuardedMod where\n{src}\n"
+private def priorBlock (i : Nat) (propSrc witSrc : String) : String :=
+  s!"def admitted_{i} : GuardedMod where\n{propSrc}\n\ndef admitted_{i}_wit : Val × List Val :=\n{witSrc}\n"
 
 private def admittedList (n : Nat) : String :=
   let names := (List.range n).map (fun i => s!"admitted_{i}")
   "[" ++ String.intercalate ", " names ++ "]"
 
+private def admittedWitnessFsts (n : Nat) : String :=
+  let names := (List.range n).map (fun i => s!"admitted_{i}_wit.1")
+  "[" ++ String.intercalate ", " names ++ "]"
+
 private def buildWrapper
-    (proposalSrc : String) (witnessSrc : String) (priors : List String) : String :=
+    (proposalSrc : String) (witnessSrc : String)
+    (priors : List (String × String)) (extendWitnesses : Bool) : String :=
   let priorDefs := priors.zipIdx.foldl
-    (fun acc ⟨src, i⟩ => acc ++ admittedDef i src) ""
+    (fun acc ⟨(p, w), i⟩ => acc ++ priorBlock i p w) ""
   let priorList := admittedList priors.length
+  let extra := if extendWitnesses then admittedWitnessFsts priors.length else "[]"
   s!"import LeanBlack.Tower
 
 {priorDefs}
@@ -67,8 +73,10 @@ def proposal : GuardedMod where
 def witness : Val × List Val :=
 {witnessSrc}
 
+def policyWitnesses : List Val := stdWitnesses ++ {extra}
+
 def main : IO Unit := do
-  if witnessPolicy stdWitnesses proposal stdRule then
+  if witnessPolicy policyWitnesses proposal stdRule then
     let priors : List GuardedMod := {priorList}
     let chained := priors.foldl (fun r m => applyMod m r) stdRule
     let final := applyMod proposal chained
@@ -81,13 +89,24 @@ def main : IO Unit := do
 "
 
 /-- Send the LLM's proposed term through Lean and the policy gate.
-    `priors` is the list of previously-admitted proposal sources (each
-    a `where`-block body); they're spliced as named defs and folded
-    into the chained rule for the witness evaluation. -/
+
+    `priors` is a list of (proposalSrc, witnessSrc) pairs from previously-
+    admitted rounds. The proposal sources are spliced as `admitted_i`
+    and folded into the chained rule for the witness evaluation; the
+    witness sources are spliced as `admitted_i_wit`.
+
+    `extendWitnesses = false` ("base mode") uses `stdWitnesses` alone,
+    proving disjointness from stdRule's success cases — the conservative-
+    extension-of-base policy. `extendWitnesses = true` ("current mode")
+    uses `stdWitnesses ++ [admitted_i_wit.1, ...]`, so each new proposal
+    must additionally not fire on any prior admit's witness value. This
+    rejects proposals that overlap with previously-claimed domains. -/
 def checkProposal (cfg : Config)
-    (proposalSrc : String) (witnessSrc : String) (priors : List String)
+    (proposalSrc : String) (witnessSrc : String)
+    (priors : List (String × String)) (extendWitnesses : Bool)
     : IO Result := do
-  IO.FS.writeFile cfg.wrapperPath (buildWrapper proposalSrc witnessSrc priors)
+  IO.FS.writeFile cfg.wrapperPath
+    (buildWrapper proposalSrc witnessSrc priors extendWitnesses)
   let out ← IO.Process.output {
     cmd := "lake"
     args := #["env", "lean", "--run", cfg.wrapperPath]
