@@ -103,6 +103,37 @@ This is necessary conditions, not incompleteness. It shows the external assumpti
 ### Connection to [Black's assume.blk](https://github.com/namin/black/blob/play-assume/ASSUME.md)
 The disjoint-guard policy from [`assume.blk`](https://github.com/namin/black/blob/play-assume/examples/assume.blk) is formalized as `witnessPolicy` and proved sound (`disjoint_policy_sound`). The concrete instance: `multn_disjoint_std` proves multn's guard is disjoint from stdRule. The gap between the witness-based check (finite, computable) and true disjointness (universal, non-computable) is the assurance lattice.
 
+## LLM-driven gate
+
+A small loop in which Claude (via AWS Bedrock) proposes a `GuardedMod` in Lean source, and the Lean compiler plus the tower's policy decide whether to admit it. Three pieces:
+
+- **`LeanBlack/Bedrock.lean`** — `invoke : Config → String → IO (Except String String)`, wrapping `aws bedrock-runtime invoke-model`. Reads AWS credentials from the standard chain (env vars or `~/.aws/credentials`), defaults to `us-east-1` and `us.anthropic.claude-sonnet-4-6`.
+- **`LeanBlack/Elab.lean`** — `checkProposal` writes a wrapper file (imports `LeanBlack.Tower`, defines `proposal : GuardedMod where <LLM source>`, runs `witnessPolicy stdWitnesses proposal stdRule` in `main`), spawns `lake env lean --run` on it, and classifies the outcome as `elabError | rejected | admitted`. No in-process MetaM — the Lean compiler is the elaborator.
+- **`LeanBlack/Runner.lean`** — composes them. Builds the proposer prompt (which includes previously-admitted proposals so the LLM varies its output), strips markdown fences if present, fixes the common LLM first-line indent trim, and loops.
+
+### Running
+
+Prerequisites: `aws` CLI on PATH with Bedrock-enabled credentials, and the project built (`lake build`).
+
+```bash
+lake exe bedrock-smoke      # one-shot round trip ("READY")
+lake exe proposal-smoke     # exercise admitted / rejected / elab-error
+                            # on three hardcoded proposals
+lake exe runner [N]         # N rounds of LLM-proposes / Lean-checks
+                            # (default 3)
+```
+
+A typical 3-round run admits a bool-negate primitive, a num-add, and a num-multiply — each elaborated by Lean and admitted by the policy gate.
+
+### Scope and limits
+
+The runner gates each proposal against `witnessPolicy stdWitnesses` over `stdRule` — the conservative-extension-of-base property. Each admitted modification is individually disjoint from stdRule's success cases (`+`, `-`, `*`, closures), so the composition of all admitted mods preserves stdRule's outputs everywhere stdRule succeeds. This is the safety property `install_safe` and `eval_tower_conservative` already prove; the runner is its LLM-driven counterpart.
+
+What the runner does **not** demonstrate:
+
+- **Causal effect on the tower.** Admitted proposals don't run inside a `TowerState`. We check each one against the gate but never thread a tower through, so there's no "after admit, evaluate `(2 3 4)` and watch behavior change." That story lives in `Tower.lean`'s `#eval` smoke tests; the runner just adds the LLM-proposer half.
+- **Proof retry on elaboration error.** When Lean rejects a proposal, the diagnostic is captured but not fed back to the LLM. A short extension to `runOneRound` would close the loop (catch `elabError`, append Lean's stderr to the next prompt, re-fire).
+
 ## Open
 
 ### The Gödelian limit (not yet formalized)
