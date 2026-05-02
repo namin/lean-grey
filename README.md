@@ -107,11 +107,13 @@ The disjoint-guard policy from [`assume.blk`](https://github.com/namin/black/blo
 
 ## LLM-driven gate
 
-A small loop in which Claude (via AWS Bedrock) proposes a `GuardedMod` in Lean source, and the Lean compiler plus the tower's policy decide whether to admit it. Three pieces:
+A small loop in which Claude (via AWS Bedrock) proposes a `GuardedMod` in Lean source, and a two-stage cascade decides whether to admit it: a cheap witness check first; on rejection, an LLM-supplied, kernel-checked `Disjoint` proof.
 
-- **`LeanBlack/Bedrock.lean`** — `invoke : Config → String → IO (Except String String)`, wrapping `aws bedrock-runtime invoke-model`. Reads AWS credentials from the standard chain (env vars or `~/.aws/credentials`), defaults to `us-east-1` and `us.anthropic.claude-sonnet-4-6`.
-- **`LeanBlack/Elab.lean`** — `checkProposal` writes a wrapper file (imports `LeanBlack.Tower`, splices each previously-admitted mod as `def admitted_i : GuardedMod`, defines `proposal : GuardedMod where <LLM source>` and `witness : Val × List Val := <LLM source>`, then in `main` runs the policy gate; on admit it folds `priors` and `proposal` into a chained rule via `applyMod` and evaluates the witness against it). Spawns `lake env lean --run`. Outcome: `elabError | rejected | admitted (Option String)`, where the `Option String` is the `repr` of the witness's evaluated value. No in-process MetaM — the Lean compiler is the elaborator.
-- **`LeanBlack/Runner.lean`** — composes them. The prompt asks the LLM for two ALL-CAPS sections: `PROPOSAL:` (the `where`-block fields) and `WITNESS:` (a `Val × List Val` term that exercises the proposal). The runner parses both sections, fixes the common first-line indent trim on the proposal, and loops. On `elabError`, it re-prompts with the prior attempt and Lean's diagnostic, retrying up to `Config.maxRetries` (default 1) before giving up on the round.
+- **`LeanBlack/Bedrock.lean`** — `invoke : Config → String → IO (Except String String)`, wrapping `aws bedrock-runtime invoke-model`. Reads AWS credentials from the standard chain (env vars or `~/.aws/credentials`); defaults to `us-east-1` and `us.anthropic.claude-sonnet-4-6`.
+- **`LeanBlack/Elab.lean`** — two stages.
+  - `checkProposalWitness` writes a wrapper that splices the proposal, witness, and prior admits, then runs `witnessPolicy ws proposal stdRule` in `main`. Returns `elabError | admittedByWitness | rejected`. Cheap, finite, computable.
+  - `checkProposalProof` writes a wrapper that adds `def disjointProof : Disjoint proposal targetRule := <LLM proof source>` — if the kernel accepts the proof, `disjoint_policy_sound` gives us `UnivSound` for the resulting policy, hence conservative extension. Returns `elabError | admittedByProof`.
+- **`LeanBlack/Runner.lean`** — orchestrates the cascade. Each round: prompt for `PROPOSAL` + `WITNESS`, run the witness check; on `rejected`, re-prompt for `PROOF` of `Disjoint proposal targetRule`, run the proof check; classify. Elaboration retries up to `maxElabRetries` (default 1) for the proposal stage and `maxProofRetries` (default 1) for the proof stage. On `elabError` the runner feeds Lean's diagnostic into the retry prompt.
 
 ### Running
 
@@ -121,36 +123,38 @@ Prerequisites: `aws` CLI on PATH with Bedrock-enabled credentials, and the proje
 lake exe bedrock-smoke               # one-shot round trip ("READY")
 lake exe proposal-smoke              # exercise admitted / rejected / elab-error
                                      # on three hardcoded proposals
-lake exe runner [N] [base|current]   # N rounds; mode picks the policy.
+lake exe runner [N] [base|current]   # N rounds; mode picks the target rule.
                                      # default: 3 rounds, base mode.
 ```
 
-The two modes are different policies for the same property (CE) with different reach:
+The two modes pick the rule the proof must show disjointness from:
 
-- **base** uses `witnessPolicy stdWitnesses` — each proposal must avoid stdRule's success cases. Accumulated mods don't influence later verdicts; conflicting proposals are all admitted.
-- **current** uses `witnessPolicy (stdWitnesses ++ priorWitnessVals)` — each prior admit's witness value extends the witness list, so a proposal whose guard fires on a previously-claimed value is rejected.
+- **base** uses `targetRule = stdRule`. Witness check uses `stdWitnesses`. Proof obligation is `Disjoint proposal stdRule` (CE-of-base).
+- **current** uses `targetRule = priors.foldl applyMod stdRule`. Witness check extends `stdWitnesses` with prior witness values. Proof obligation is `Disjoint proposal currentRule` (CE-of-current — the strongest claim available at this point in the run).
 
 A typical 3-round contrast:
 
 ```
-base:    bool admit → num admit → num admit (conflict)        3 admitted
-current: bool admit → num admit → num REJECTED (overlap)      2 admitted, 1 rejected
+base:    3 proposals → 3 admitted by witness         (no proof stage triggered)
+current: 3 proposals → 2 admitted by witness, 1 rejected
+                       (round 3 num-handler fails witness; LLM-supplied
+                        Disjoint proof also fails because the property
+                        genuinely doesn't hold — the proposal really does
+                        overlap with round 2's mod)
 ```
 
-Same proposals, same architecture, different policy mode, demonstrably different verdicts.
+The current-mode rejection is the safety property working: the proposal isn't disjoint from the current rule, so no proof of `Disjoint proposal currentRule` can exist, and the kernel correctly refuses to admit one.
 
 On admit, the wrapper computes `applyMod proposal (priors.foldl applyMod stdRule) v args` for the LLM's `(v, args)` witness and prints the value's `repr` — so each round shows what the just-admitted mod actually does.
 
 ### Scope and limits
 
-Both runner modes use `witnessPolicy` instances and prove conservative extension. **base** mode preserves CE-of-stdRule (each admitted mod is individually disjoint from stdRule's success cases). **current** mode additionally rejects mods that fire on territory already claimed by previously admitted mods, approximating CE-of-current via the growing witness list. Both fit the parametric `Policy.SoundFor _ _ ConservativeExt` schema; what differs is which witnesses are passed.
-
-The witness eval on admit shows the causal effect of the chained rule: each round produces a value computed against `applyMod proposal (priors.foldl applyMod stdRule)`. (Whether a particular witness exercises prior mods or only the new one depends on which guards fire first under `applyMod`'s outer-wins semantics — typical LLM-chosen witnesses fire on the just-added mod.)
+The cascade is sound by construction: `admittedByWitness` invokes `witnessPolicy` (proven sound for `stdRule` via `disjoint_policy_sound`), and `admittedByProof` invokes the kernel on a Lean term of type `Disjoint proposal targetRule`. The LLM's role is constrained to the proposer side of the LCF discipline.
 
 Remaining caveats:
 
-- Retry attempts overwrite the verdict — `RoundResult` records only the final attempt's source. To inspect the full retry trace, `runOneRound` would need to accumulate intermediates.
-- The witness policy in current mode tracks one representative value per admitted mod (the witness's `.1` component). A proposal whose guard fires on a *different* `.num` value than the one in the prior admit's witness wouldn't be caught by this approximation — the LLM happens to use representative numeric values, which makes the demo work, but the gate is a finite approximation of "true disjointness from current rule."
+- Retry attempts overwrite the verdict — `RoundResult` records only the final attempt's source. The intermediate rejections appear in the live console output but not in the structured log.
+- LLM-written `Disjoint` proofs are reliability-limited. In practice the LLM may hallucinate constructors that aren't in our `Val` type, or use tactics that don't terminate in the way it expects. The kernel correctly rejects all such attempts; the impact is that some genuinely-disjoint proposals may be rejected because the LLM couldn't write the proof, not because the property doesn't hold. (When the property *doesn't* hold — round 3 in current mode — proof failure is the correct outcome, not a limitation.)
 
 ## Open
 

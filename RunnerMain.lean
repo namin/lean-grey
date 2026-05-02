@@ -11,7 +11,7 @@ def main (args : List String) : IO Unit := do
   let bcfg : LeanBlack.Bedrock.Config := {}
   let ecfg : LeanBlack.Elab.Config := {}
   let rcfg : LeanBlack.Runner.Config := { mode }
-  let mut priors : List (String × String) := []  -- (proposalSrc, witnessSrc)
+  let mut priors : List (String × String) := []
   let mut log : List LeanBlack.Runner.RoundResult := []
   for i in [0:nRounds] do
     IO.println s!"\n========== ROUND {i+1}/{nRounds} =========="
@@ -20,14 +20,21 @@ def main (args : List String) : IO Unit := do
     | some r =>
       IO.println s!"VERDICT: {r.outcome}"
       log := log ++ [r]
-      match r.outcome with
-      | .admitted _ => priors := priors ++ [(r.proposalSrc, r.witnessSrc)]
-      | _ => pure ()
+      if r.outcome.isAdmitted then
+        priors := priors ++ [(r.proposalSrc, r.witnessSrc)]
   IO.println "\n========== SUMMARY =========="
-  IO.println s!"Mode:         {mode}"
-  IO.println s!"Total rounds: {log.length}"
-  IO.println s!"Admitted:     {priors.length}"
-  let nRej := log.filter (fun r => match r.outcome with | .rejected => true | _ => false) |>.length
-  let nErr := log.filter (fun r => match r.outcome with | .elabError _ => true | _ => false) |>.length
-  IO.println s!"Rejected:     {nRej}"
-  IO.println s!"Elab errors:  {nErr}"
+  IO.println s!"Mode:                 {mode}"
+  IO.println s!"Total rounds:         {log.length}"
+  IO.println s!"Admitted:             {priors.length}"
+  let nByWitness := log.filter (fun r => match r.outcome with
+    | .admittedByWitness _ => true | _ => false) |>.length
+  let nByProof := log.filter (fun r => match r.outcome with
+    | .admittedByProof _ => true | _ => false) |>.length
+  let nRej := log.filter (fun r => match r.outcome with
+    | .rejected => true | _ => false) |>.length
+  let nErr := log.filter (fun r => match r.outcome with
+    | .elabError _ => true | _ => false) |>.length
+  IO.println s!"  by witness:         {nByWitness}"
+  IO.println s!"  by disjoint proof:  {nByProof}"
+  IO.println s!"Rejected:             {nRej}"
+  IO.println s!"Elab errors:          {nErr}"
