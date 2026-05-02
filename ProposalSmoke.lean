@@ -2,21 +2,20 @@ import LeanBlack.Elab
 
 def main : IO Unit := do
   let cfg : LeanBlack.Elab.Config := {}
-  -- Each case is a `where`-block body: indented field bindings that get
-  -- spliced into `def proposal : GuardedMod where` by the wrapper.
-  let cases : List (String × String) := [
-    -- Should elaborate and be ADMITTED: reuse multnMod's projections,
-    -- which `witnessPolicy_accepts_multn` already proves admissible.
+  -- Each case is (label, proposal `where`-body, witness term).
+  let cases : List (String × String × String) := [
+    -- Admitted: multnMod-like, witness exercises numbers as multiplication.
     ("multnMod-like (admitted)",
-      "  guard := multnMod.guard\n  handler := multnMod.handler"),
-    -- Should elaborate but be REJECTED: a guard firing on .prim "+",
-    -- which is in stdWitnesses, so the witness policy rejects it.
+      "  guard := multnMod.guard\n  handler := multnMod.handler",
+      "(.num 2, [.num 3, .num 4])"),
+    -- Rejected: guard fires on .prim, witness irrelevant since policy rejects.
     ("override prim (rejected)",
-      "  guard v := match v with | .prim _ => true | _ => false\n  handler _ _ := some (.num 0)"),
-    -- Should fail to elaborate.
-    ("nonsense (elab error)", "this_is_not_a_guarded_mod")
+      "  guard v := match v with | .prim _ => true | _ => false\n  handler _ _ := some (.num 0)",
+      "(.prim \"+\", [.num 1, .num 2])"),
+    -- Elab error: unknown identifier.
+    ("nonsense (elab error)", "this_is_not_a_guarded_mod", "(.num 0, [])")
   ]
-  for (label, src) in cases do
+  for (label, propSrc, witSrc) in cases do
     IO.println s!"\n=== {label} ==="
-    let r ← LeanBlack.Elab.checkProposal cfg src
+    let r ← LeanBlack.Elab.checkProposal cfg propSrc witSrc []
     IO.println s!"-> {r}"

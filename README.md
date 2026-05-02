@@ -108,8 +108,8 @@ The disjoint-guard policy from [`assume.blk`](https://github.com/namin/black/blo
 A small loop in which Claude (via AWS Bedrock) proposes a `GuardedMod` in Lean source, and the Lean compiler plus the tower's policy decide whether to admit it. Three pieces:
 
 - **`LeanBlack/Bedrock.lean`** — `invoke : Config → String → IO (Except String String)`, wrapping `aws bedrock-runtime invoke-model`. Reads AWS credentials from the standard chain (env vars or `~/.aws/credentials`), defaults to `us-east-1` and `us.anthropic.claude-sonnet-4-6`.
-- **`LeanBlack/Elab.lean`** — `checkProposal` writes a wrapper file (imports `LeanBlack.Tower`, defines `proposal : GuardedMod where <LLM source>`, runs `witnessPolicy stdWitnesses proposal stdRule` in `main`), spawns `lake env lean --run` on it, and classifies the outcome as `elabError | rejected | admitted`. No in-process MetaM — the Lean compiler is the elaborator.
-- **`LeanBlack/Runner.lean`** — composes them. Builds the proposer prompt (which includes previously-admitted proposals so the LLM varies its output), strips markdown fences if present, fixes the common LLM first-line indent trim, and loops.
+- **`LeanBlack/Elab.lean`** — `checkProposal` writes a wrapper file (imports `LeanBlack.Tower`, splices each previously-admitted mod as `def admitted_i : GuardedMod`, defines `proposal : GuardedMod where <LLM source>` and `witness : Val × List Val := <LLM source>`, then in `main` runs the policy gate; on admit it folds `priors` and `proposal` into a chained rule via `applyMod` and evaluates the witness against it). Spawns `lake env lean --run`. Outcome: `elabError | rejected | admitted (Option String)`, where the `Option String` is the `repr` of the witness's evaluated value. No in-process MetaM — the Lean compiler is the elaborator.
+- **`LeanBlack/Runner.lean`** — composes them. The prompt asks the LLM for two ALL-CAPS sections: `PROPOSAL:` (the `where`-block fields) and `WITNESS:` (a `Val × List Val` term that exercises the proposal). The runner parses both sections, fixes the common first-line indent trim on the proposal, and loops. On `elabError`, it re-prompts with the prior attempt and Lean's diagnostic, retrying up to `Config.maxRetries` (default 1) before giving up on the round.
 
 ### Running
 
@@ -123,16 +123,26 @@ lake exe runner [N]         # N rounds of LLM-proposes / Lean-checks
                             # (default 3)
 ```
 
-A typical 3-round run admits a bool-negate primitive, a num-add, and a num-multiply — each elaborated by Lean and admitted by the policy gate.
+A typical 3-round run admits three mods, each with a witness that the wrapper evaluates against the chained rule. Sample output:
+
+```
+ROUND 1: bool combinator → witness (.bool true, [.num 7])  →  Val.num 7
+ROUND 2: num subtract    → witness (.num 7, [.num 3])      →  Val.num 4
+ROUND 3: num n*m+n       → witness (.num 6, [.num 3])      →  Val.num 24
+```
+
+Each value is the `repr` of `applyMod proposal (priors.foldl applyMod stdRule) v args`, computed inside the `lake env lean --run` subprocess.
 
 ### Scope and limits
 
 The runner gates each proposal against `witnessPolicy stdWitnesses` over `stdRule` — the conservative-extension-of-base property. Each admitted modification is individually disjoint from stdRule's success cases (`+`, `-`, `*`, closures), so the composition of all admitted mods preserves stdRule's outputs everywhere stdRule succeeds. This is the safety property `install_safe` and `eval_tower_conservative` already prove; the runner is its LLM-driven counterpart.
 
-What the runner does **not** demonstrate:
+The witness eval shows causal effect of the chained rule: each round's admit produces a value computed against `applyMod proposal (priors.foldl applyMod stdRule)`, so accumulated mods are part of the rule the witness runs against. (Whether a particular witness exercises *prior* mods or only the new one depends on which guards fire first under `applyMod`'s outer-wins semantics — for typical LLM-chosen witnesses, the just-added mod fires.)
 
-- **Causal effect on the tower.** Admitted proposals don't run inside a `TowerState`. We check each one against the gate but never thread a tower through, so there's no "after admit, evaluate `(2 3 4)` and watch behavior change." That story lives in `Tower.lean`'s `#eval` smoke tests; the runner just adds the LLM-proposer half.
-- **Proof retry on elaboration error.** When Lean rejects a proposal, the diagnostic is captured but not fed back to the LLM. A short extension to `runOneRound` would close the loop (catch `elabError`, append Lean's stderr to the next prompt, re-fire).
+Remaining caveats:
+
+- The gate stays the rule-independent `witnessPolicy stdWitnesses`, so accepted-mod conflicts don't reject — round 3 can claim `.num` even if round 2 already did. This is the conservative-extension-of-base story, accepted as the design.
+- Retry attempts overwrite the verdict — `RoundResult` records only the final attempt's source. If you want to inspect the full retry trace, `runOneRound` would need to accumulate intermediates.
 
 ## Open
 
