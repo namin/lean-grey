@@ -570,7 +570,7 @@ def stdWitnesses : List Val := [.prim "+", .closure [] (.num 0) []]
 
 theorem witnessPolicy_accepts_multn :
     witnessPolicy stdWitnesses multnMod stdRule = true := by
-  native_decide
+  decide
 
 -- For the full connection: the witness policy is a SOUND APPROXIMATION
 -- of the ideal disjoint policy, in the sense that if it accepts,
